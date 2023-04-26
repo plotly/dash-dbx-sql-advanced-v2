@@ -3,9 +3,9 @@
 DB_NAME = "main"
 SCHEMA = "plotly_iot_dashboard"
 
-SERVER_HOSTNAME =  "plotly-customer-success.cloud.databricks.com"
-HTTP_PATH = "/sql/1.0/warehouses/f08f0b85ddba8d2e"
-ACCESS_TOKEN = "dapia86bd9f9bc3504ca74a4966c0e669002"
+SERVER_HOSTNAME =  "PUT_YOUR_SERVER_HOSTNAME_HERE"
+HTTP_PATH = "/sql/1.0/warehouses/YOUR_TOKEN"
+ACCESS_TOKEN = "YOUR_ACCESS_TOKEN_HERE"
 
 ## Other
 
