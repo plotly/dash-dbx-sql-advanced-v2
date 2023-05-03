@@ -362,7 +362,7 @@ RIGHT_TAB = html.Div(
                                     id="user-id",
                                     value="19",
                                     fullWidth=True,
-                                    data=dbx_utils.get_listofusers(),
+                                    data=dbx_utils.get_listofusers(dash_prepare=True)
                                 ),
                                 ## USER TEXT INFO 1
                                 dmc.Col(

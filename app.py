@@ -75,8 +75,8 @@ def refresh_data_at_interval(interval_trigger):
 )
 def make_userpage(userid, fitness):
     df_userdemo = dbx_utils.get_user_data(int(userid))
-    df_userfit = dbx_utils.get_fitness_data(int(userid))
-    fig_user = figures.generate_userbar(df_userfit, fitness, userid)
+    df_userfit = dbx_utils.get_fitness_data(int(userid), fitness=fitness)
+    fig_user = figures.generate_userbar(df_userfit, fitness, int(userid))
     df_usercomp = dbx_utils.get_user_comp(fitness)
 
     header = f"Patient {userid}'s fitness data"

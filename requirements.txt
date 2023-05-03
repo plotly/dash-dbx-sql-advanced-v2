@@ -4,6 +4,7 @@ dash-iconify==0.1.2
 pandas==1.3.0
 python-dotenv==0.20.0
 gunicorn==20.0.4
-databricks-sql-connector==2.0.2
+databricks-sql-connector==2.4.0
 pyspark==3.2.1
 numpy
+SQLAlchemy==1.4.44

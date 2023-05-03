@@ -8,7 +8,7 @@ from constants import (
 from databricks import sqlalchemy
 import sqlalchemy
 import datetime
-from sqlalchemy.orm import declarative_base, Session
+from sqlalchemy.orm import declarative_base, Session, aliased
 from sqlalchemy import (
     text,
     Table,
@@ -60,47 +60,52 @@ def get_line_data(yaxis, comp):
         autoload_with=engine,
         extend_existing=True,
     )
-
-    subq = (
-        user_session.query(
+    subquery = (
+        select(
+            func.CAST(sensors_table.c.timestamp, DATE).label("date"),
             case([(users_table.c.gender == "F", "Female")], else_="Male").label("sex"),
             case([(users_table.c.smoker == "N", "Non-smoker")], else_="Smoker").label(
                 "smoker"
             ),
-            cast(sensors_table.c.timestamp, DATE).label("date"),
-            users_table.c.cholestlevs.label("cholesterol"),
-            users_table.c.bp.label("bloodpressure"),
-            users_table.c.user_id,
+            sensors_table.c.user_id,
             func.sum(sensors_table.c.num_steps * 0.00035).label("num_steps"),
             func.sum(sensors_table.c.miles_walked * 0.0003).label("miles_walked"),
             func.sum(sensors_table.c.calories_burnt * 0.002).label("calories_burnt"),
+            users_table.c.cholestlevs.label("cholesterol"),
+            users_table.c.bp.label("bloodpressure"),
         )
-        .select_from(sensors_table)
-        .join(users_table, sensors_table.c.user_id == users_table.c.userid)
-        .group_by("sex", "smoker", "date", "user_id", "cholesterol", "bloodpressure")
-        .subquery()
+        .select_from(
+            sensors_table.join(
+                users_table, sensors_table.c.user_id == users_table.c.userid
+            )
+        )
+        .group_by("date", "sex", "smoker", "user_id", "cholesterol", "bloodpressure")
+        .alias("subquery")
     )
 
-    # Define the main query
+    # define the outer query to aggregate the data by date and comp (presumably a comparison metric)
     query = (
-        user_session.query(
-            subq.c.date,
-            case(
-                [(comp == "sex", subq.c.sex), (comp == "smoker", subq.c.smoker)]
-            ).label(comp),
-            func.avg(yaxis).label(yaxis + "tot"),
+        select(
+            subquery.c.date,
+            case([(subquery.c.sex == "Female", "F")], else_="M").label("sex"),
+            case([(subquery.c.smoker == "Smoker", "Y")], else_="N").label("smoker"),
+            func.avg(subquery.c.cholesterol).label("cholesteroltot"),
+            func.avg(subquery.c.bloodpressure).label("bloodpressuretot"),
+            func.avg(subquery.c.num_steps).label("num_stepstot"),
+            func.avg(subquery.c.miles_walked).label("miles_walkedtot"),
+            func.avg(subquery.c.calories_burnt).label("calories_burnttot"),
         )
-        .group_by(
-            subq.c.date,
-            case([(comp == "sex", subq.c.sex), (comp == "smoker", subq.c.smoker)]),
-        )
-        .order_by(subq.c.date)
+        .select_from(subquery)
+        .group_by("date", "sex", "smoker")
+        .order_by("date")
     )
-    with engine.begin() as conn:
-        df = pd.read_sql_query(query, con=conn)
+
+    df = pd.read_sql_query(query, engine)
+
+    return df
 
 
-def get_listofusers():
+def get_listofusers(dash_prepare=False):
     users_table = Table(
         "silver_users",
         utils.ddls.Base.metadata,
@@ -115,8 +120,12 @@ def get_listofusers():
         .order_by(users_table.c.userid.asc())
     )
 
-    # with engine.begin() as conn:
-    #     df = pd.read_sql_query(query, con=conn)
+    df = pd.read_sql_query(query.statement, engine)
+
+    if dash_prepare:
+        return [{"label": str(i), "value": str(i)} for i in df["userid"]]
+    else:
+        return df
 
 
 def get_user_data(user):
@@ -143,8 +152,9 @@ def get_user_data(user):
 
     query = user_session.query(subq).filter(subq.c.userid == user)
 
-    with engine.begin() as conn:
-        df = pd.read_sql_query(query, con=conn)
+    df = pd.read_sql_query(query.statement, engine)
+
+    return df
 
 
 def get_fitness_data(user, fitness):
@@ -175,8 +185,9 @@ def get_fitness_data(user, fitness):
         .order_by(subq.c.date)
     )
 
-    with engine.begin() as conn:
-        df = pd.read_sql_query(query, con=conn)
+    df = pd.read_sql_query(query.statement, engine)
+
+    return df
 
 
 def get_scatter_data(xaxis, comp):
@@ -209,8 +220,8 @@ def get_scatter_data(xaxis, comp):
         func.count(distinct(subq.c.userid)).label("Total"),
     ).group_by(getattr(subq.c, xaxis), getattr(subq.c, comp), subq.c.risk)
 
-    with engine.begin() as conn:
-        df = pd.read_sql_query(query, con=conn)
+    df = pd.read_sql_query(query.statement, engine)
+    return df
 
 
 def get_heat_data(axis1, axis2, fitness, comp, slider):
@@ -230,84 +241,101 @@ def get_heat_data(axis1, axis2, fitness, comp, slider):
         extend_existing=True,
     )
 
-    subq = (
-        select(
-            [
-                case([(users_table.c.gender == "F", "Female")], else_="Male").label(
-                    "sex"
-                ),
-                case(
-                    [(users_table.c.smoker == "N", "Non-smoker")], else_="Smoker"
-                ).label("Smoker"),
-                users_table.c.cholestlevs.label("cholesterol"),
-                users_table.c.bp.label("bloodpressure"),
-                func.sum(sensors_table.c.num_steps * 0.00035).label("num_steps"),
-                func.sum(sensors_table.c.miles_walked * 0.0003).label("miles_walked"),
-                func.sum(sensors_table.c.calories_burnt * 0.002).label(
-                    "calories_burnt"
-                ),
-                users_table.c.age,
-                users_table.c.height,
-                users_table.c.weight,
-                sensors_table.c.user_id,
-            ]
-        )
-        .select_from(
-            sensors_table.join(
-                users_table, sensors_table.c.user_id == users_table.c.userid
+    query = f"""SELECT {axis1}, {axis2}, {comp}, AVG({fitness}) AS {fitness}tot 
+            FROM(
+                SELECT
+                CASE WHEN gender='F' THEN 'Female' ELSE 'Male' END AS sex, 
+                CASE WHEN smoker='N' THEN 'Non-smoker' ELSE 'Smoker' END AS Smoker,
+                cholestlevs AS cholesterol, bp AS bloodpressure,
+                SUM(num_steps*0.00035) AS num_steps, SUM(miles_walked*0.0003) AS miles_walked, SUM(calories_burnt*0.002) AS calories_burnt,
+                age, height, weight, user_id
+                FROM {sensors_table}
+                LEFT JOIN {users_table} ON {sensors_table}.user_id = {users_table}.userid
+                WHERE {fitness} BETWEEN ((SELECT MAX({fitness}) FROM {sensors_table})*{slider[0]}*0.01) 
+                AND ((SELECT MAX({fitness}) FROM {sensors_table})*{slider[1]}*0.01)
+                GROUP BY sex, Smoker, cholesterol, bloodpressure, user_id, age, height, weight
             )
-        )
-        .where(
-            fitness.between(
-                (
-                    select([func.max(sensors_table.c.fitness)]).scalar()
-                    * slider[0]
-                    * 0.01
-                ),
-                (
-                    select([func.max(sensors_table.c.fitness)]).scalar()
-                    * slider[1]
-                    * 0.01
-                ),
-            )
-        )
-        .group_by(
-            case([(users_table.c.gender == "F", "Female")], else_="Male"),
-            case([(users_table.c.smoker == "N", "Non-smoker")], else_="Smoker"),
-            users_table.c.cholestlevs,
-            users_table.c.bp,
-            users_table.c.user_id,
-            users_table.c.age,
-            users_table.c.height,
-            users_table.c.weight,
-        )
-        .alias()
-    )
+            GROUP BY {comp}, {axis1}, {axis2}
+            """
 
-    # define main query
-    query = (
-        select(
-            [
-                axis1,
-                axis2,
-                comp,
-                func.avg(fitness).label(f"{fitness}tot"),
-            ]
-        )
-        .select_from(subq)
-        .group_by(comp, axis1, axis2)
-        .order_by(f"{fitness}tot")
-    )
+    # subq = (
+    #     select(
+    #         [
+    #             case([(users_table.c.gender == "F", "Female")], else_="Male").label(
+    #                 "sex"
+    #             ),
+    #             case(
+    #                 [(users_table.c.smoker == "N", "Non-smoker")], else_="Smoker"
+    #             ).label("Smoker"),
+    #             users_table.c.cholestlevs.label("cholesterol"),
+    #             users_table.c.bp.label("bloodpressure"),
+    #             func.sum(sensors_table.c.num_steps * 0.00035).label("num_steps"),
+    #             func.sum(sensors_table.c.miles_walked * 0.0003).label("miles_walked"),
+    #             func.sum(sensors_table.c.calories_burnt * 0.002).label(
+    #                 "calories_burnt"
+    #             ),
+    #             users_table.c.age,
+    #             users_table.c.height,
+    #             users_table.c.weight,
+    #             sensors_table.c.user_id,
+    #         ]
+    #     )
+    #     .select_from(
+    #         sensors_table.join(
+    #             users_table, sensors_table.c.user_id == users_table.c.userid
+    #         )
+    #     )
+    #     .where(
+    #         sensors_table.c[fitness].between(
+    #             (
+    #                 select([func.max(sensors_table.c[fitness])]).scalar()
+    #                 * slider[0]
+    #                 * 0.01
+    #             ),
+    #             (
+    #                 select([func.max(sensors_table.c[fitness])]).scalar()
+    #                 * slider[1]
+    #                 * 0.01
+    #             ),
+    #         )
+    #     )
+    #     .group_by(
+    #         case([(users_table.c.gender == "F", "Female")], else_="Male"),
+    #         case([(users_table.c.smoker == "N", "Non-smoker")], else_="Smoker"),
+    #         users_table.c.cholestlevs,
+    #         users_table.c.bp,
+    #         sensors_table.c.user_id,  ##TODO
+    #         users_table.c.age,
+    #         users_table.c.height,
+    #         users_table.c.weight,
+    #     )
+    #     .alias()
+    # ).subquery()
 
-    with engine.begin() as conn:
-        df = pd.read_sql_query(query, con=conn)
+    # # define main query
+    # query = (
+    #     user_session.query(
+    #         [
+    #             sensors_table.c[axis1],
+    #             sensors_table.c[axis2],
+    #             sensors_table.c[comp],
+    #             func.avg(sensors_table.c[fitness]).label(f"{fitness}tot"),
+    #         ]
+    #     )
+    #     .select_from(subq)
+    #     .group_by(sensors_table.c[comp], sensors_table.c[axis1], sensors_table.c[axis2])
+    #     .order_by(f"{fitness}tot")
+    # )
+
+    df = pd.read_sql_query(query, engine)
+
+    return df
 
 
 def get_user_comp(fitness):
     users_table = Table(
         "silver_users",
         utils.ddls.Base.metadata,
-        Column("user_id", Integer),
         autoload=True,
         autoload_with=engine,
         extend_existing=True,
@@ -316,7 +344,6 @@ def get_user_comp(fitness):
     sensors_table = Table(
         "silver_sensors",
         utils.ddls.Base.metadata,
-        Column("user_id", Integer),
         autoload=True,
         autoload_with=engine,
         extend_existing=True,
@@ -324,14 +351,14 @@ def get_user_comp(fitness):
 
     subq = (
         user_session.query(
-            func.sum(sensors_table.num_steps * 0.00035).label("num_steps"),
-            func.sum(sensors_table.miles_walked * 0.0003).label("miles_walked"),
-            func.sum(sensors_table.calories_burnt * 0.002).label("calories_burnt"),
-            sensors_table.users_table_id.label("users_table_id"),
+            func.sum(sensors_table.c.num_steps * 0.00035).label("num_steps"),
+            func.sum(sensors_table.c.miles_walked * 0.0003).label("miles_walked"),
+            func.sum(sensors_table.c.calories_burnt * 0.002).label("calories_burnt"),
+            sensors_table.c.user_id,
         )
         .select_from(sensors_table)
-        .join(users_table, sensors_table.user_id == users_table.userid)
-        .group_by(sensors_table.user_id)
+        .join(users_table, sensors_table.c.user_id == users_table.c.userid)
+        .group_by(sensors_table.c.user_id.label("user_id"))
         .subquery()
     )
 
@@ -339,5 +366,6 @@ def get_user_comp(fitness):
         subq.c.user_id, subq.c.num_steps + subq.c.miles_walked + subq.c.calories_burnt
     ).order_by(subq.c.num_steps + subq.c.miles_walked + subq.c.calories_burnt)
 
-    with engine.begin() as conn:
-        df = pd.read_sql_query(query, con=conn)
+    df = pd.read_sql_query(query.statement, engine)
+
+    return df
